@@ -1,0 +1,8 @@
+# build outputs
+lua/**/*.o
+lua/**/bin/
+lua/**/lib/*.a
+lua/**/lib/*.so*
+lua/**/lib/*.so.*
+lua/**/Makefile.bak*
+lua/**/iolib.c.bak
