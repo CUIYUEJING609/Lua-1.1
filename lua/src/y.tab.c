@@ -331,25 +331,68 @@ int yywrap (void)
 ** Parse LUA code and execute global statement.
 ** Return 0 on success or 1 on error.
 */
+/*
+【我自己的理解：lua_parse 是整个“前端+执行”的总开关】
+
+我一开始以为 parse 就是“检查语法”，最多生成点中间结果。
+但 Lua 1.1 这版不是这么分阶段的：它的思路更像一条流水线：
+- 先准备一块内存当作字节码区（initcode）
+- 然后调用 yyparse 做语法分析（yyparse 会不断调用 yylex 拿 token）
+- yyparse 在分析的同时会把指令一条条写进 initcode（也就是“生成字节码”）
+- 最后自己补一个 HALT，当作字节码的结束符
+- 然后立刻调用 lua_execute 执行这段字节码（也就是直接跑起来）
+
+所以 lua_parse 不是“纯 parse”，它是：生成 bytecode + 马上执行。
+这也解释了为什么 dofile/dostring 里只调用 lua_parse，一下就能出结果。
+*/
 int lua_parse (void)
 {
  Byte *init = initcode = (Byte *) calloc(GAPCODE, sizeof(Byte));
- maincode = 0; 
+  /* 
+   * 这里先给 initcode 分一块初始空间。
+   * 我把 initcode 理解成“主程序的字节码数组”，后面 yyparse 生成的指令都往这里塞。
+   * GAPCODE 是一次先给一段基础容量，不够了后面再扩（类似动态数组的味道）。
+   */ 
+maincode = 0;
+  /*
+   * maincode 可以理解成“当前已经写了多少条字节码/写到第几个位置”。
+   * maxmain 是当前字节码区的容量上限，防止写爆内存。
+   */ 
  maxmain = GAPCODE;
  if (init == NULL)
+  /*
+   * 老代码里这种内存检查很重要：calloc 失败就直接报错返回。
+   * 不然下面 yyparse 写字节码的时候会直接往空指针里写，直接崩。
+   */
  {
   lua_error("not enough memory");
   return 1;
  }
  err = 0;
+  /*
+   * yyparse 是 yacc 生成的语法分析器。
+   * 它会不停地调用 yylex() 来拿 token（NAME/NUMBER/STRING/关键字/符号）。
+   * 只要语法错了，或者 yyerror 把 err 置 1，这里就直接返回失败。
+   */
  if (yyparse () || (err==1)) return 1;
  initcode[maincode++] = HALT;
+  /*
+   * 给字节码补一个 HALT（停止指令）。
+   * 我理解成“程序末尾必须有个刹车”，不然 VM 不知道什么时候停。
+   */
  init = initcode;
 #if LISTING
  PrintCode(init,init+maincode);
 #endif
+  /*
+   * parse 完直接 execute，也就是“边编译边运行 / 编译完马上运行”。
+   * Trace（打印 opcode）就是在 lua_execute 的循环里看见每一条指令怎么跑的。
+   */
  if (lua_execute (init)) return 1;
  free(init);
+  /*
+   * 这块是收尾：initcode 是 malloc/calloc 出来的，要 free 掉。
+   */
  return 0;
 }
 
