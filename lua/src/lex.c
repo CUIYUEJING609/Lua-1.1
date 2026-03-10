@@ -92,14 +92,38 @@ int findReserved (char *name)
   return 0;
 }
 
+/*
+【我自己的理解：yylex 到底在干嘛？】
 
+这函数就是 Lua 1.1 的“切词器/分词器”。
+它不是去理解语法，也不是去执行代码，它只干一件事：
+从输入里一个字符一个字符读，然后“切成 token”交给 yyparse（语法分析器）。
+
+yyparse 不会直接看原始字符，它只认 token：
+比如 NAME、NUMBER、STRING、IF、WHILE、'+'、'-' 这种。
+所以 yylex 的工作做不好，后面语法分析就直接崩，或者会出现“明明看着对但解析报错”的情况。
+
+我一开始读源码最容易迷糊的点是：yylex 自己要负责跳过空白/注释，
+因为“空格”和“注释”对语法来说就是不存在的，不该变成 token。
+*/
 int yylex ()
 {
-  while (1)
+/* 
+这里 while(1) 的意思是：yylex 会一直读，直到“凑出一个 token”才 return。
+如果读到的是空格/注释这种“没用的东西”，就 continue 继续读下一段。
+所以 yylex 不是一次读完文件，它是一边被 yyparse 调用、一边按需产出 token。
+*/  
+while (1)
   {
     yytextLast = yytext;
     switch (current)
     {
+/*
+空白处理（很关键）：
+- 空格/Tab：直接跳过，不输出 token
+- 换行：也跳过，但要顺便把 lua_linenumber++，这样报错才能指出正确行号
+这里用的是“case '\n' 不 break，继续落到空格/Tab 的逻辑”，属于一种省事写法。
+*/
       case '\n': lua_linenumber++;
       case ' ':
       case '\t':
@@ -123,7 +147,22 @@ int yylex ()
         }
 	return WRONGTOKEN;
   
-     case '-':
+  /*
+【Hack 点：注释符号】
+
+原版 Lua 1.1 的习惯是用 “--” 做单行注释：看到两个 '-' 就把这一行吃掉。
+我这里为了做 Hack，额外支持了 “//” 这种注释（更像 C/Java 的习惯）：
+- 如果遇到 '/'，再看下一个是不是也是 '/'
+- 是的话就一直 next() 吃到行尾（'\n' 或 EOF），然后 continue
+- 注意：continue 的意思就是“注释不生成 token”，对语法分析来说就当没看见
+
+我这里还有一个踩坑点：
+我现在的 case '-' 被我改成了直接返回 '-'，所以原版的 “-- 注释”其实被我破坏了。
+如果老师要求保留原本语法，那我应该把 “--” 注释逻辑也加回来：
+遇到 '-' 时，如果下一个还是 '-'，就吃到行尾；否则才返回 '-'。
+这一点我会在报告里写成 Bug 复盘（属于我真正读代码后才意识到的坑）。
+*/   
+case '-':
   save_and_next();
   return '-';
 case '/':
@@ -147,6 +186,16 @@ case '/':
         if (current != '=') return '~';
         else { save_and_next(); return NE; }
 
+/*
+字符串处理：
+这里支持 "..." 和 '...' 两种字符串。
+逻辑很直白：先记住用的是什么引号(del)，然后一直读到同一个引号结束。
+
+中途要处理转义：
+比如 '\n'、'\t'、'\r' 这些要转换成真正的字符。
+如果读到换行或 EOF 还没闭合，就当成坏 token（WRONGTOKEN），交给上层报错。
+最后把字符串放进常量表 lua_findconstant，并返回 STRING token。
+*/
       case '"':
       case '\'':
       {
@@ -178,7 +227,17 @@ case '/':
         yylval.vWord = lua_findconstant (yytext);
         return STRING;
       }
+/*
+NAME / 关键字处理：
+我把它理解成“先把一个单词完整读出来，再决定它是什么”。
 
+- 读规则：字母或 '_' 开头，后面可以跟字母/数字/'_'
+- 读完后先去 reserved[] 里查是不是关键字（and/if/while 等）
+  - 是关键字：直接返回关键字 token
+  - 不是：返回 NAME，并把文本放到 yylval 里，给语法分析器用
+
+这里用二分查找 findReserved()，主要是因为关键字表是排序好的，查起来快一点。
+*/
       case 'a': case 'b': case 'c': case 'd': case 'e':
       case 'f': case 'g': case 'h': case 'i': case 'j':
       case 'k': case 'l': case 'm': case 'n': case 'o':
