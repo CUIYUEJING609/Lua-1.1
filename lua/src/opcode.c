@@ -622,6 +622,27 @@ void lua_travstack (void (*fn)(Object *))
 ** Open file, generate opcode and execute global statement. Return 0 on
 ** success or 1 on error.
 */
+/*
+【我自己的理解版：lua_dofile 是干嘛的？】
+
+我一开始以为 “dofile” 就是直接把脚本跑起来。
+但看源码之后发现，它其实就是一条很固定的流水线：
+
+1) lua_openfile(filename)
+   - 这一步不是“解析”，只是把输入源切到“文件”
+   - 后面的词法分析器 yylex() 读字符的时候，就会从这个文件里读
+
+2) lua_parse()
+   - 这一步才是真正的“干活”：语法分析 + 生成一段字节码(initcode)
+   - 而且 Lua 1.1 不是只 parse 检查语法，它 parse 完会立刻去执行（在 lua_parse 里面就调用 lua_execute）
+
+3) lua_closefile()
+   - 收尾：把文件关掉，顺便把输入状态清理干净
+   - 不然下一次再 dofile 可能会读错东西或者把状态串台
+
+所以我把 lua_dofile 总结成一句话：打开文件 → parse 并执行 → 关闭文件。
+return 0 表示成功，return 1 表示中间哪一步出错了。
+*/
 int lua_dofile (char *filename)
 {
  if (lua_openfile (filename)) return 1;
@@ -633,6 +654,19 @@ int lua_dofile (char *filename)
 /*
 ** Generate opcode stored on string and execute global statement. Return 0 on
 ** success or 1 on error.
+*/
+
+/*
+【lua_dostring：和 dofile 其实是同一个套路】
+
+这个函数跟 lua_dofile 基本一模一样，只是输入源不是文件而是字符串。
+
+- lua_openstring(string)：把输入源切成“字符串模式”
+- lua_parse()：语法分析 + 生成字节码 + 立刻执行
+- lua_closestring()：把这次字符串输入的状态清掉
+
+所以 dofile/dostring 的差别可以简单理解成：
+“从哪读代码”不同，但后面的 parse 和 execute 是一条通用链路。
 */
 int lua_dostring (char *string)
 {
@@ -651,6 +685,16 @@ int lua_call (char *functionname, int nparam)
  int i; 
  Object func = s_object(lua_findsymbol(functionname));
  if (tag(&func) != T_FUNCTION) return 1;
+ /* 
+  * 这里我理解是在“整理栈上的布局”，为了让 VM 能按固定格式去调用函数。
+  * 
+  * 我自己的粗暴理解：
+  * - 栈上本来只有 nparam 个参数（param1, param2, ...）
+  * - 但 VM 需要一个“函数对象 func” + 一个“分隔标记 MARK” 来知道参数从哪开始、调用到哪结束
+  * - 所以这里把参数整体往上挪出两个位置（top += 2），空出两个格子放 MARK 和 func
+  * 
+  * MARK 的作用就像“这是一次函数调用的分界线”，方便 VM 在 return 的时候把栈收拾回来。
+  */
  for (i=1; i<=nparam; i++)
   *(top-i+2) = *(top-i);
  top += 2;
