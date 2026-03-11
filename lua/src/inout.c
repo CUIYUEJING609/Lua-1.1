@@ -225,7 +225,7 @@ void lua_popfunction (void)
 void lua_reportbug (char *s)
 {
  char msg[1024];
- strcpy (msg, s);
+ snprintf(msg, sizeof(msg), "%s", s);
  if (lua_debugline != 0)
  {
   int i;
