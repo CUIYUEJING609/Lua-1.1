@@ -1,3 +1,4 @@
+
 /*
 ** opcode.c
 ** TecCGraf - PUC-Rio
@@ -134,26 +135,104 @@ static int lua_tostring (Object *obj)
  return 0;
 }
 
+/* 把 opcode 数字翻译成名字（我看 trace 时不想只看一堆数字） */
+static const char *opname(OpCode op)
+{
+  switch (op)
+  {
+    /* 一些最常见的压栈指令 */
+    case PUSHNIL:    return "PUSHNIL";
+    case PUSH0:      return "PUSH0";
+    case PUSH1:      return "PUSH1";
+    case PUSH2:      return "PUSH2";
+    case PUSHBYTE:   return "PUSHBYTE";
+    case PUSHWORD:   return "PUSHWORD";
+    case PUSHFLOAT:  return "PUSHFLOAT";
+    case PUSHSTRING: return "PUSHSTRING";
+
+    /* 这条我在 trace 里经常看到：把 table[index] 这种东西算出来压回栈顶 */
+    case PUSHINDEXED: return "PUSHINDEXED";
+
+    /* 调用/返回/结束 */
+    case CALLFUNC: return "CALLFUNC";
+    case RETCODE:  return "RETCODE";
+    case HALT:     return "HALT";
+
+    /* 一些存储相关的 */
+    case STOREGLOBAL: return "STOREGLOBAL";
+    case STORELOCAL:  return "STORELOCAL";
+
+    /* 运算相关：1+2 最典型就是 ADDOP */
+    case ADDOP: return "ADDOP";
+
+    /* POP：弹栈清理，不然栈会越堆越多 */
+    case POP: return "POP";
+
+    /* 其他我暂时没一一补全，就统一叫 UNKNOWN（不影响跑，只是 trace 看着没那么爽） */
+    /* PUSHGLOBAL：把全局变量（比如 print）压到栈上，后面才能调用 */
+    case PUSHGLOBAL: return "PUSHGLOBAL";
+
+    /* PUSHMARK：我理解成“打个标记/分隔符”，经常在函数调用参数前出现 */
+    case PUSHMARK: return "PUSHMARK";
+
+    /* ADJUST：清理/调整栈，把多余的东西弹掉，让栈回到一个干净状态 */
+    case ADJUST: return "ADJUST";
+    default: return "UNKNOWN";
+  }
+}
 /*
 ** Execute the given opcode. Return 0 in success or 1 on error.
 */
 int lua_execute (Byte *pc)
 {
-long ip = 0;
- Object *oldbase = base;
- base = top;
- while (1)
- {
-  OpCode opcode;
-  printf("[TRACE] opcode=%d\n", (int)(*pc));
-/* trace: 打印当前pc和opcode */
-  
-printf("[TRACE] pc=%p  opcode=%d\n", (void*)pc, (int)*pc);
-fprintf(stderr, "[TRACE] ip=%ld  opcode=%d\n", ip, (int)(*pc));
-ip++;
+  Object *oldbase = base;
+  base = top;
+
+  while (1)
+  {
+    OpCode opcode;
+/* ========= Trace（防刷屏版）=========
+ * 我想看虚拟机每一步在干啥，但不想默认刷屏。
+ * 用法：
+ *   - 默认不打印
+ *   - LUA_TRACE=1 才打印
+ *   - LUA_TRACE_N=数字（可选）限制最多打印多少条，避免刷屏
+ */
+{
+  static int inited = 0;        /* 只初始化一次 */
+  static int trace_on = 0;      /* 是否开 trace */
+  static long trace_left = -1;  /* 还能打印多少条；-1 表示不限 */
+
+  if (!inited)
+  {
+    inited = 1;
+
+    /* 有 LUA_TRACE 就开，不然默认关 */
+    trace_on = (getenv("LUA_TRACE") != NULL);
+
+    /* 如果设置了 LUA_TRACE_N，就按它限制条数 */
+    {
+      char *n = getenv("LUA_TRACE_N");
+      if (n != NULL) trace_left = atol(n);
+    }
+  }
+
+  /* 开关开 + 没超过上限，才打印 */
+  if (trace_on && trace_left != 0)
+  {
+    OpCode cur = (OpCode)(*pc);
+    long depth = (long)(top - stack);
+
+    fprintf(stderr, "[TRACE] pc=%p  op=%d(%s)  stack=%ld\n",
+            (void*)pc, (int)cur, opname(cur), depth);
+
+    /* 如果设置了上限，就每打印一次减一；减到 0 自动停 */
+    if (trace_left > 0) trace_left--;
+  }
+}
+/* ======== Trace 结束 ======== */
 switch (opcode = (OpCode)*pc++)
   {
-   case PUSHNIL: tag(top++) = T_NIL; break;
    
    case PUSH0: tag(top) = T_NUMBER; nvalue(top++) = 0; break;
    case PUSH1: tag(top) = T_NUMBER; nvalue(top++) = 1; break;
